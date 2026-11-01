@@ -4,6 +4,7 @@ import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useLibrary } from '../context/LibraryContext.jsx';
 import { movieApi } from '../services/api.js';
 import { usePlaybackSession } from '../hooks/usePlaybackSession.js';
+import { useHlsPlayer } from '../hooks/useHlsPlayer.js';
 import { getSeekableTimeline, resolveSeekTime } from '../services/media-timeline.js';
 import './WatchPage.css';
 
@@ -66,7 +67,6 @@ export default function WatchPage() {
   const playerRef = useRef(null);
   const subtitleTrackRef = useRef(null);
   const progressRef = useRef(progress);
-  const activeHlsRef = useRef(null);
   const applyPendingSeekRef = useRef(() => false);
   const seekToRef = useRef(() => false);
   const toggleFullscreenRef = useRef(() => Promise.resolve());
@@ -256,6 +256,17 @@ export default function WatchPage() {
   }, [applyPendingSeek]);
   applyPendingSeekRef.current = applyPendingSeek;
 
+  const activeHlsRef = useHlsPlayer({
+    id,
+    videoRef,
+    playback,
+    playbackGeneration,
+    updateTimeline,
+    setPlaybackError,
+    attemptFallback,
+    tryOriginalFile,
+  });
+
   useEffect(() => {
     let effectActive = true;
     openTrackMenuRef.current = null;
@@ -277,58 +288,6 @@ export default function WatchPage() {
       audioRequestControllerRef.current = null;
     };
   }, [id]);
-
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !playback?.url) return undefined;
-    const sourceUrl = playback.url;
-    const strategy = playback.decision.strategy;
-    video.removeAttribute('src');
-    if (strategy === 'direct' || video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = sourceUrl;
-      return () => {
-        if (video.src === sourceUrl || video.getAttribute('src') === sourceUrl) video.removeAttribute('src');
-      };
-    }
-    let disposed = false;
-    let hls;
-    const startHls = async () => {
-      try {
-        const { default: Hls } = await import('hls.js/light');
-        if (disposed) return;
-        if (!Hls.isSupported()) {
-          setPlaybackError('This browser does not support the prepared HLS stream.');
-          setFallbackUrl(movieApi.streamUrl(id));
-          void tryOriginalFile();
-          return;
-        }
-        hls = new Hls();
-        activeHlsRef.current = hls;
-        hls.loadSource(sourceUrl);
-        hls.attachMedia(video);
-        hls.on(Hls.Events.ERROR, (_event, data) => {
-          if (!data.fatal) return;
-          setPlaybackError('The prepared stream could not be decoded by this browser.');
-          void attemptFallback();
-        });
-        for (const eventName of [Hls.Events.MANIFEST_PARSED, Hls.Events.LEVEL_UPDATED, Hls.Events.FRAG_BUFFERED]) {
-          if (eventName) hls.on(eventName, () => updateTimeline(video));
-        }
-      } catch (error) {
-        if (disposed) return;
-        setPlaybackError(`HLS playback could not be initialized: ${error.message}`);
-        setFallbackUrl(movieApi.streamUrl(id));
-        void tryOriginalFile();
-      }
-    };
-    void startHls();
-    return () => {
-      disposed = true;
-      if (activeHlsRef.current === hls) activeHlsRef.current = null;
-      hls?.destroy();
-      if (video.getAttribute('src') === sourceUrl) video.removeAttribute('src');
-    };
-  }, [id, playback?.url, playback?.sessionId, playback?.decision?.strategy, playbackGeneration, updateTimeline, attemptFallback, tryOriginalFile]);
 
   useEffect(() => {
     function updateFullscreenState() {
