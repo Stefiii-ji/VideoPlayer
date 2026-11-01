@@ -436,8 +436,6 @@ body { background: #0b0c10; }
   .movie-card:hover .poster-art, .movie-card:focus-within .poster-art { transform: none; }
 }
 
-:focus { outline: 3px solid #f0c77d !important; outline-offset: 3px !important; }
-:focus-visible { outline: 3px solid #f0c77d !important; outline-offset: 3px !important; }
 button, a, input, select { touch-action: manipulation; }
 .rail-link, .mobile-nav-link, .button, .refresh-button, .row-controls button { font-size: 15px; }
 .row-controls button { width: 40px; height: 40px; }
