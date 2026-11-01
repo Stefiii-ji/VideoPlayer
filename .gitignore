@@ -1,0 +1,16 @@
+node_modules/
+client/node_modules/
+server/node_modules/
+
+server/.env
+client/.env.local
+client/.env.*.local
+
+server/data/*.json
+client/dist/
+coverage/
+*.log
+.DS_Store
+
+# Local Organizer import files
+/organizer-input/
