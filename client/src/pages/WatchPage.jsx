@@ -5,6 +5,7 @@ import { useLibrary } from '../context/LibraryContext.jsx';
 import { movieApi } from '../services/api.js';
 import { usePlaybackSession } from '../hooks/usePlaybackSession.js';
 import { useHlsPlayer } from '../hooks/useHlsPlayer.js';
+import { usePlayerTracks } from '../hooks/usePlayerTracks.js';
 import { getSeekableTimeline, resolveSeekTime } from '../services/media-timeline.js';
 import './WatchPage.css';
 
@@ -65,7 +66,6 @@ export default function WatchPage() {
   const startFromBeginning = location.state?.startFromBeginning === true;
   const videoRef = useRef(null);
   const playerRef = useRef(null);
-  const subtitleTrackRef = useRef(null);
   const progressRef = useRef(progress);
   const applyPendingSeekRef = useRef(() => false);
   const seekToRef = useRef(() => false);
@@ -77,7 +77,6 @@ export default function WatchPage() {
   const resumePlayingRef = useRef(false);
   const resumeAppliedRef = useRef(false);
   const lastTimeRenderRef = useRef(0);
-  const audioRequestControllerRef = useRef(null);
   const controlsTimerRef = useRef(null);
   const playingRef = useRef(false);
   const openTrackMenuRef = useRef(null);
@@ -96,11 +95,46 @@ export default function WatchPage() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [buffering, setBuffering] = useState(false);
   const [suggestNext, setSuggestNext] = useState(false);
-  const [subtitles, setSubtitles] = useState([]);
-  const [selectedSubtitle, setSelectedSubtitle] = useState('');
-  const [selectedAudio, setSelectedAudio] = useState('');
-  const [openTrackMenu, setOpenTrackMenu] = useState(null);
   const [controlsVisible, setControlsVisible] = useState(true);
+
+  const revealControls = useCallback(() => {
+    setControlsVisible(true);
+    window.clearTimeout(controlsTimerRef.current);
+    controlsTimerRef.current = null;
+    if (playingRef.current && !openTrackMenuRef.current && !seekingRef.current && !controlsFocusedRef.current) {
+      controlsTimerRef.current = window.setTimeout(() => {
+        if (playingRef.current && !openTrackMenuRef.current && !seekingRef.current && !controlsFocusedRef.current) {
+          setControlsVisible(false);
+        }
+      }, 3000);
+    }
+  }, []);
+
+  const requestPlaybackRef = useRef(() => Promise.resolve(null));
+  const {
+    changeAudioTrack,
+    changeTrackMenu,
+    closeTrackMenu,
+    openTrackMenu,
+    selectedAudio,
+    selectedSubtitle,
+    setSelectedAudio,
+    setSelectedSubtitle,
+    subtitles,
+    subtitleTrackRef,
+  } = usePlayerTracks({
+    id,
+    videoRef,
+    pendingSeekRef,
+    seekIntentRef,
+    currentTimeRef,
+    resumePlayingRef,
+    requestPlaybackRef,
+    revealControls,
+    controlsTimerRef,
+    setControlsVisible,
+    openTrackMenuRef,
+  });
 
   const resetPlaybackUi = useCallback(() => {
     resumeAppliedRef.current = false;
@@ -115,10 +149,7 @@ export default function WatchPage() {
     setCanSeek(false);
     setPlaying(false);
     playingRef.current = false;
-    openTrackMenuRef.current = null;
-    setOpenTrackMenu(null);
     setSuggestNext(false);
-    setSelectedAudio('');
   }, []);
 
   const {
@@ -148,54 +179,11 @@ export default function WatchPage() {
     setCanSeek,
     resetPlaybackUi,
   });
-
-  const revealControls = useCallback(() => {
-    setControlsVisible(true);
-    window.clearTimeout(controlsTimerRef.current);
-    controlsTimerRef.current = null;
-    if (playingRef.current && !openTrackMenuRef.current && !seekingRef.current && !controlsFocusedRef.current) {
-      controlsTimerRef.current = window.setTimeout(() => {
-        if (playingRef.current && !openTrackMenuRef.current && !seekingRef.current && !controlsFocusedRef.current) {
-          setControlsVisible(false);
-        }
-      }, 3000);
-    }
-  }, []);
-
-  function changeTrackMenu(menu) {
-    const nextMenu = openTrackMenuRef.current === menu ? null : menu;
-    openTrackMenuRef.current = nextMenu;
-    setOpenTrackMenu(nextMenu);
-    if (nextMenu) {
-      window.clearTimeout(controlsTimerRef.current);
-      controlsTimerRef.current = null;
-      setControlsVisible(true);
-    } else {
-      revealControls();
-    }
-  }
-
-  function closeTrackMenu() {
-    if (!openTrackMenuRef.current) return;
-    openTrackMenuRef.current = null;
-    setOpenTrackMenu(null);
-    revealControls();
-  }
+  requestPlaybackRef.current = requestPlayback;
 
   useEffect(() => () => {
     window.clearTimeout(controlsTimerRef.current);
   }, []);
-
-  useEffect(() => {
-    if (!openTrackMenu) return undefined;
-    function closeOnOutsidePointer(event) {
-      if (event.target instanceof Element && !event.target.closest('.player-track-controls')) {
-        closeTrackMenu();
-      }
-    }
-    document.addEventListener('pointerdown', closeOnOutsidePointer);
-    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer);
-  }, [openTrackMenu]);
 
   progressRef.current = progress;
 
@@ -266,28 +254,6 @@ export default function WatchPage() {
     attemptFallback,
     tryOriginalFile,
   });
-
-  useEffect(() => {
-    let effectActive = true;
-    openTrackMenuRef.current = null;
-    setOpenTrackMenu(null);
-    setSelectedAudio('');
-    setSelectedSubtitle('');
-    setSubtitles([]);
-
-    movieApi.subtitles(id).then((result) => {
-      if (!effectActive) return;
-      setSubtitles(result.subtitles ?? []);
-    }).catch((error) => {
-      if (effectActive) console.warn(`Subtitle tracks could not be loaded: ${error.message}`);
-    });
-
-    return () => {
-      effectActive = false;
-      audioRequestControllerRef.current?.abort();
-      audioRequestControllerRef.current = null;
-    };
-  }, [id]);
 
   useEffect(() => {
     function updateFullscreenState() {
@@ -440,24 +406,6 @@ export default function WatchPage() {
       setPlaybackError('The browser could not seek to that position. Choose a position in the available timeline.');
       return false;
     }
-  }
-
-  function changeAudioTrack(value) {
-    if (value === '' || !videoRef.current) return;
-    const streamIndex = Number(value);
-    if (!Number.isInteger(streamIndex)) return;
-    audioRequestControllerRef.current?.abort();
-    const controller = new AbortController();
-    audioRequestControllerRef.current = controller;
-    pendingSeekRef.current = videoRef.current.currentTime;
-    seekIntentRef.current = null;
-    currentTimeRef.current = videoRef.current.currentTime;
-    resumePlayingRef.current = !videoRef.current.paused;
-    void requestPlayback({ audioStreamIndex: streamIndex, signal: controller.signal }).then((result) => {
-      if (audioRequestControllerRef.current !== controller || result || controller.signal.aborted) return;
-      pendingSeekRef.current = null;
-      resumePlayingRef.current = false;
-    });
   }
 
   async function toggleFullscreen() {
