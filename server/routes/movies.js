@@ -13,6 +13,5 @@ export function createMovieRouter(controller) {
   router.get('/:id/stream', controller.stream);
   router.get('/:id/metadata', controller.metadata);
   router.get('/:id', controller.detail);
-  router.get('/:id/transcode', controller.transcode);
   return router;
 }

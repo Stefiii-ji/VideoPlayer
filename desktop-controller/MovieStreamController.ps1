@@ -3,10 +3,23 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$projectRoot = 'D:\My Code\MovieStream'
-$serverPort = 5000
+$projectRoot = Split-Path -Parent $PSScriptRoot
+$defaultServerPort = 5000
 $clientPort = 5173
 $mockClientPort = 5174
+$serverPort = $defaultServerPort
+$serverEnvPath = Join-Path (Join-Path $projectRoot 'server') '.env'
+if (Test-Path -LiteralPath $serverEnvPath -PathType Leaf) {
+    foreach ($line in Get-Content -LiteralPath $serverEnvPath) {
+        $trimmedLine = $line.Trim()
+        if (-not $trimmedLine -or $trimmedLine.StartsWith('#')) { continue }
+        if ($trimmedLine -match '^PORT\s*=\s*(.*?)\s*$') {
+            $portValue = $matches[1].Trim().Trim('"').Trim("'")
+            if ($portValue) { $serverPort = [int]$portValue }
+            break
+        }
+    }
+}
 $startupTimeoutSeconds = 90
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -110,7 +123,7 @@ function New-StatusCard([string]$heading, [string]$port) {
     return @{ Panel = $panel; Value = $value }
 }
 
-$backendCard = New-StatusCard 'Backend' '5000'
+$backendCard = New-StatusCard 'Backend' "$serverPort"
 $frontendCard = New-StatusCard 'Frontend' $(if ($Mock) { "$mockClientPort" } else { "$clientPort" })
 $overallPanel = New-Object System.Windows.Forms.Panel
 $overallPanel.Dock = 'Fill'
@@ -280,7 +293,7 @@ function Start-ControllerServer {
         if ($Mock) {
             $powershell = Join-Path $PSHOME 'powershell.exe'
             $mockScript = Join-Path $PSScriptRoot 'Mock-Services.ps1'
-            $arguments = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $mockScript + '"'
+            $arguments = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $mockScript + '" -BackendPort ' + $serverPort + ' -ClientPort ' + $mockClientPort
             $script:session = [MovieStream.Controller.ProcessJob]::Launch($powershell, $arguments, $PSScriptRoot)
         } else {
             $command = Join-Path $env:SystemRoot 'System32\cmd.exe'

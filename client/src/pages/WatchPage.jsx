@@ -7,6 +7,7 @@ import { usePlaybackSession } from '../hooks/usePlaybackSession.js';
 import { useHlsPlayer } from '../hooks/useHlsPlayer.js';
 import { usePlayerTracks } from '../hooks/usePlayerTracks.js';
 import { usePlayerControls } from '../hooks/usePlayerControls.js';
+import { useResumeProgress } from '../hooks/useResumeProgress.js';
 import { getSeekableTimeline, resolveSeekTime } from '../services/media-timeline.js';
 import './WatchPage.css';
 
@@ -27,13 +28,6 @@ function describeAudioTrack(track, position) {
     track.channels ? `${track.channels} ch` : null,
   ].filter(Boolean);
   return `${track.isDefault ? 'Default · ' : ''}Track ${position + 1}${details.length ? ` · ${details.join(' · ')}` : ''}`;
-}
-
-function getMediaDuration(video, mediaMetadata) {
-  if (Number.isFinite(video.duration) && video.duration > 0) return video.duration;
-  return Number.isFinite(mediaMetadata?.duration) && mediaMetadata.duration > 0
-    ? mediaMetadata.duration
-    : 0;
 }
 
 function playVideo(video, onFailure) {
@@ -67,7 +61,6 @@ export default function WatchPage() {
   const startFromBeginning = location.state?.startFromBeginning === true;
   const videoRef = useRef(null);
   const playerRef = useRef(null);
-  const progressRef = useRef(progress);
   const applyPendingSeekRef = useRef(() => false);
   const seekToRef = useRef(() => false);
   const currentTimeRef = useRef(0);
@@ -192,8 +185,6 @@ export default function WatchPage() {
   playbackErrorRef.current = setPlaybackError;
   closeTrackMenuRef.current = closeTrackMenu;
 
-  progressRef.current = progress;
-
   const applyPendingSeek = useCallback(() => {
     const video = videoRef.current;
     const requestedTime = pendingSeekRef.current;
@@ -250,6 +241,24 @@ export default function WatchPage() {
     applyPendingSeek();
   }, [applyPendingSeek]);
   applyPendingSeekRef.current = applyPendingSeek;
+
+  const { getDurationForVideo, handleLoadedMetadata, saveProgressForVideo } = useResumeProgress({
+    id,
+    progress,
+    startFromBeginning,
+    videoRef,
+    playbackRef,
+    currentTimeRef,
+    pendingSeekRef,
+    seekIntentRef,
+    resumePlayingRef,
+    resumeAppliedRef,
+    applyPendingSeekRef,
+    updateTimeline,
+    setCurrentTime,
+    setPlaybackError,
+    saveProgress,
+  });
 
   const activeHlsRef = useHlsPlayer({
     id,
@@ -385,30 +394,10 @@ export default function WatchPage() {
       >
         <video
           ref={videoRef}
+          crossOrigin="use-credentials"
           tabIndex={0}
           playsInline
-          onLoadedMetadata={(event) => {
-            const video = event.currentTarget;
-            if (!resumeAppliedRef.current && pendingSeekRef.current === 0 && seekIntentRef.current === null) {
-              pendingSeekRef.current = null;
-            }
-            if (pendingSeekRef.current === null && seekIntentRef.current === null) {
-              currentTimeRef.current = video.currentTime;
-              setCurrentTime(video.currentTime);
-            }
-            updateTimeline(video);
-            if (pendingSeekRef.current === null && !resumeAppliedRef.current) {
-              const resumeAt = startFromBeginning ? null : progressRef.current[id]?.currentTime;
-              if (Number.isFinite(resumeAt) && resumeAt > 0) {
-                pendingSeekRef.current = resumeAt;
-                resumePlayingRef.current = true;
-              } else {
-                resumeAppliedRef.current = true;
-                playVideo(video, () => setPlaybackError('Playback was blocked. Press play again to continue.'));
-              }
-            }
-            applyPendingSeekRef.current();
-          }}
+          onLoadedMetadata={(event) => handleLoadedMetadata(event.currentTarget)}
           onDurationChange={(event) => updateTimeline(event.currentTarget)}
           onProgress={(event) => updateTimeline(event.currentTarget)}
           onLoadedData={(event) => updateTimeline(event.currentTarget)}
@@ -445,7 +434,7 @@ export default function WatchPage() {
             window.clearTimeout(controlsTimerRef.current);
             controlsTimerRef.current = null;
             setControlsVisible(true);
-            saveProgress(id, event.currentTarget.currentTime, getMediaDuration(event.currentTarget, playback?.metadata), true);
+            saveProgressForVideo(event.currentTarget, true);
           }}
           onWaiting={() => setBuffering(true)}
           onCanPlay={(event) => {
@@ -468,9 +457,9 @@ export default function WatchPage() {
               setCurrentTime(video.currentTime);
             }
             if (!video.seeking && !seekInFlight && !seekPending) seekIntentRef.current = null;
-            const mediaDuration = getMediaDuration(video, playback?.metadata);
+            const mediaDuration = getDurationForVideo(video);
             setDuration(mediaDuration);
-            if (!seekPending && !seekInFlight) saveProgress(id, video.currentTime, mediaDuration);
+            if (!seekPending && !seekInFlight) saveProgressForVideo(video);
             updateTimeline(video);
           }}
           onEnded={() => {

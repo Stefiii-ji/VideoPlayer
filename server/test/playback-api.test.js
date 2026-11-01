@@ -105,24 +105,6 @@ function ffmpegWithSubtitleOutput(transcodeArguments) {
   };
 }
 
-function delayedGeneratingFfmpeg(onTranscodeStarted) {
-  return (_executable, args, options) => fakeChild((child) => {
-    if (args[0] === '-version' || args[0] === '-encoders' || args[0] === '-muxers') {
-      completeFfmpegCheck(child, args);
-      return;
-    }
-    onTranscodeStarted();
-    const timer = setTimeout(() => {
-      void writeFile(path.join(options.cwd, 'index.m3u8'), '#EXTM3U\n');
-    }, 100);
-    const kill = child.kill;
-    child.kill = () => {
-      clearTimeout(timer);
-      return kill();
-    };
-  });
-}
-
 async function startApp({ ffmpegSpawn = availableFfmpeg(), ffprobeSpawn = fakeFfprobe() } = {}) {
   app = createApp({
     movieDirectory,
@@ -413,18 +395,9 @@ test('creates, heartbeats, serves, and stops a managed playback session', async 
   assert.equal((await fetch(statusUrl)).status, 404);
 });
 
-test('cancelling the legacy transcode request stops its newly-created session', async () => {
-  let markTranscodeStarted;
-  const transcodeStarted = new Promise((resolve) => {
-    markTranscodeStarted = resolve;
-  });
-  await startApp({ ffmpegSpawn: delayedGeneratingFfmpeg(markTranscodeStarted) });
+test('the unused legacy transcode URL does not create playback sessions', async () => {
+  await startApp();
   const id = await getMovieId();
-  const abortController = new AbortController();
-  const request = fetch(`${baseUrl}/api/movies/${id}/transcode`, { signal: abortController.signal });
-  await transcodeStarted;
-  abortController.abort();
-  await assert.rejects(request, { name: 'AbortError' });
-  await new Promise((resolve) => setTimeout(resolve, 150));
-  assert.deepEqual(await readdir(transcodeDirectory), []);
+  const response = await fetch(`${baseUrl}/api/movies/${id}/transcode`);
+  assert.equal(response.status, 404);
 });

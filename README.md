@@ -19,39 +19,31 @@ The interface features cinematic discovery, searchable movie rows, folder browsi
 - Node.js 22.12 LTS or newer, including npm (the test tooling requires Node 22.12+)
 - Your own video files in `F:\Movies` (or another configured directory)
 
+## Continuous integration
+
+GitHub Actions runs `npm test` and `npm run build` on Ubuntu and Windows with Node.js 22.12 or newer for pushes and pull requests.
+
 ## Install
 
 Open PowerShell in the project folder:
 
 ```powershell
-cd "D:\My Code\MovieStream"
-npm install
-npm install --prefix server
-npm install --prefix client
+cd "<path-to-MovieStream>"
+npm ci
+npm ci --prefix server
+npm ci --prefix client
 ```
 
-The project includes `server\.env` for the requested defaults. Check it before starting:
+The client also installs and builds independently with `npm ci --prefix client` and `npm run build --prefix client`.
 
-```dotenv
-MOVIE_DIRECTORY=F:/Movies
-PORT=5000
-HOST=0.0.0.0
-CLIENT_URL=http://localhost:5173
-TMDB_API_KEY=
-MOVIESTREAM_METADATA_FILE=
-FFMPEG_PATH=ffmpeg
-FFPROBE_PATH=ffprobe
-MOVIESTREAM_TRANSCODE_DIRECTORY=
-MOVIESTREAM_MAX_TRANSCODES=2
-```
-
-`server\.env.example` is a template. Do not commit `server\.env` or put secrets in `client`.
+Before starting, copy `server\.env.example` to `server\.env` and adjust the values for your setup. Do not commit `server\.env` or put secrets in `client`.
 
 | Variable | Purpose |
 | --- | --- |
 | `MOVIE_DIRECTORY` | The only folder MovieStream scans and streams |
 | `PORT` | Backend port, default `5000` |
 | `HOST` | Listen address, use `0.0.0.0` for home-network access |
+| `MOVIESTREAM_ACCESS_TOKEN` | Optional shared access token; empty disables API authentication, and a set token requires browser login |
 | `CLIENT_URL` | Allowed browser origin(s), comma-separated when using LAN addresses |
 | `TMDB_API_KEY` | Optional server-side TMDB key; empty disables online metadata |
 | `MOVIESTREAM_METADATA_FILE` | Optional location for MovieStream's JSON metadata; defaults to `server\data\library-state.json` |
@@ -66,7 +58,7 @@ MOVIESTREAM_MAX_TRANSCODES=2
 For development, start the backend and Vite frontend together:
 
 ```powershell
-cd "D:\My Code\MovieStream"
+cd "<path-to-MovieStream>"
 npm run dev
 ```
 
@@ -74,20 +66,20 @@ Open `http://localhost:5173`. To start either part separately, use two PowerShel
 
 ```powershell
 # Window 1 — backend
-cd "D:\My Code\MovieStream"
+cd "<path-to-MovieStream>"
 npm run dev:server
 ```
 
 ```powershell
 # Window 2 — frontend
-cd "D:\My Code\MovieStream"
+cd "<path-to-MovieStream>"
 npm run dev:client
 ```
 
 To run the production-built frontend through Express:
 
 ```powershell
-cd "D:\My Code\MovieStream"
+cd "<path-to-MovieStream>"
 npm run build
 npm --prefix server start
 ```

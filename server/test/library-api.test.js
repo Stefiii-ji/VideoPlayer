@@ -149,3 +149,48 @@ test('excludes a classified folder from library results without changing the med
   assert.equal((await fetch(`${baseUrl}/api/library/folders/${collectionFolder.id}`)).status, 404);
   assert.deepEqual(await import('node:fs/promises').then(({ readFile }) => readFile(path.join(mediaRoot, 'Collections', 'Sample Collection', 'A Film.mp4'))), before);
 });
+
+test('invalidates the cached catalog after classification, collection, progress, and scan changes', async () => {
+  const initial = await (await fetch(`${baseUrl}/api/library`)).json();
+  const seriesFolder = initial.folders.find((folder) => folder.name === 'Web Series');
+  const showFolder = (await (await fetch(`${baseUrl}/api/library/folders/${seriesFolder.id}`)).json())
+    .folder.children[0];
+  const classification = await fetch(`${baseUrl}/api/library/folders/${showFolder.id}/classification`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      type: 'series',
+      artworkUrl: 'https://images.example/show-poster.jpg',
+    }),
+  });
+  assert.equal(classification.status, 200);
+  const afterClassification = await (await fetch(`${baseUrl}/api/library/folders/${showFolder.id}`)).json();
+  assert.equal(afterClassification.folder.artworkUrl, 'https://images.example/show-poster.jpg');
+
+  const collectionMovie = initial.movies.find((movie) => movie.title === 'A Film');
+  const collectionResponse = await fetch(`${baseUrl}/api/library/collections`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Cache Invalidation', movieIds: [collectionMovie.id] }),
+  });
+  assert.equal(collectionResponse.status, 201);
+  const { collection } = await collectionResponse.json();
+  const afterCollectionUpdate = await (await fetch(`${baseUrl}/api/library`)).json();
+  assert.equal(afterCollectionUpdate.collections.some((item) => item.id === collection.id), true);
+
+  const episode = initial.series[0].seasons[0].episodes[0];
+  const progressResponse = await fetch(`${baseUrl}/api/library/progress/${episode.id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ positionSeconds: 30, durationSeconds: 100 }),
+  });
+  assert.equal(progressResponse.status, 200);
+  const afterProgressUpdate = await (await fetch(`${baseUrl}/api/library`)).json();
+  assert.equal(afterProgressUpdate.watchProgress[episode.id].positionSeconds, 30);
+
+  await writeFile(path.join(mediaRoot, 'New Scan Movie.mp4'), 'new media');
+  const refresh = await fetch(`${baseUrl}/api/movies/refresh`, { method: 'POST' });
+  assert.equal(refresh.status, 200);
+  const afterRescan = await (await fetch(`${baseUrl}/api/library`)).json();
+  assert.equal(afterRescan.movies.some((movie) => movie.title === 'New Scan Movie'), true);
+});

@@ -1,0 +1,53 @@
+{
+  "folderOverrides": {
+    "3fed79d67fdc321e60dbe340": {
+      "type": "normal",
+      "updatedAt": "2026-11-01T13:39:47.067Z"
+    }
+  },
+  "customCollections": [],
+  "watchProgress": {
+    "7d70f9ab7c8773753ae628a9": {
+      "positionSeconds": 81.644,
+      "durationSeconds": 2679.851,
+      "completed": false,
+      "updatedAt": "2026-11-01T12:34:37.932Z"
+    },
+    "96a6dad056b071b7e2389767": {
+      "positionSeconds": 17.174749,
+      "durationSeconds": 5457.307,
+      "completed": false,
+      "updatedAt": "2026-11-01T12:41:48.317Z"
+    },
+    "933520a88eb6550b785183d2": {
+      "positionSeconds": 1787.028357,
+      "durationSeconds": 5414.955,
+      "completed": false,
+      "updatedAt": "2026-11-01T12:33:25.372Z"
+    },
+    "c19bca55e721a448ae92bf27": {
+      "positionSeconds": 1080.382425,
+      "durationSeconds": 3188.267,
+      "completed": false,
+      "updatedAt": "2026-11-01T12:44:02.348Z"
+    },
+    "3ff2efa26de9449a58a2116b": {
+      "positionSeconds": 48.62981,
+      "durationSeconds": 3684.095333,
+      "completed": false,
+      "updatedAt": "2026-11-01T13:40:38.730Z"
+    },
+    "972867ab08e3cd5d80a3c0e4": {
+      "positionSeconds": 39.670282,
+      "durationSeconds": 3188.267,
+      "completed": false,
+      "updatedAt": "2026-11-01T14:04:38.834Z"
+    },
+    "e0c677bc652bc429b6fa87e9": {
+      "positionSeconds": 22.853318,
+      "durationSeconds": 2679.851,
+      "completed": false,
+      "updatedAt": "2026-11-01T16:05:50.405Z"
+    }
+  }
+}

@@ -3,7 +3,8 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { isWithinDirectory, scanLibrary, VIDEO_TYPES } from '../services/library.js';
+import { scanLibrary, VIDEO_TYPES } from '../services/library.js';
+import { isWithinDirectory } from '../services/path-safety.js';
 
 let fixtureRoot;
 
@@ -69,6 +70,15 @@ test('rejects a missing directory and a file used as the library root', async ()
 });
 
 test('path boundary check rejects traversal and accepts files inside the root', () => {
+  const root = path.join(os.tmpdir(), 'Movies');
+  assert.equal(isWithinDirectory(root, path.join(root, 'nested', 'film.mp4')), true);
+  assert.equal(isWithinDirectory(root, path.join(os.tmpdir(), 'Movies-old', 'film.mp4')), false);
+  assert.equal(isWithinDirectory(root, path.join(os.tmpdir(), 'Windows', 'win.ini')), false);
+});
+
+test('Windows path boundary checks reject traversal and accept files inside the root', {
+  skip: process.platform !== 'win32',
+}, () => {
   assert.equal(isWithinDirectory('D:\\Movies', 'D:\\Movies\\nested\\film.mp4'), true);
   assert.equal(isWithinDirectory('D:\\Movies', 'D:\\Movies-old\\film.mp4'), false);
   assert.equal(isWithinDirectory('D:\\Movies', 'D:\\Windows\\win.ini'), false);

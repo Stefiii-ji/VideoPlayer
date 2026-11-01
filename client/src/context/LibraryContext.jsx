@@ -5,10 +5,14 @@ const LibraryContext = createContext(null);
 const WATCH_KEY = 'moviestream-watch-progress';
 const LIST_KEY = 'moviestream-my-list';
 const METADATA_KEY = 'moviestream-metadata';
+const METADATA_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const METADATA_FAILURE_RETRY_MS = 60 * 1000;
+const MAX_METADATA_ENTRIES = 500;
 
 function readProgress() {
   try {
-    return JSON.parse(localStorage.getItem(WATCH_KEY) || '{}');
+    const stored = JSON.parse(localStorage.getItem(WATCH_KEY) || '{}');
+    return stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {};
   } catch {
     return {};
   }
@@ -22,6 +26,34 @@ function readStorage(key, fallback) {
   }
 }
 
+function readMetadataCache() {
+  try {
+    const stored = readStorage(METADATA_KEY, {});
+    if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return {};
+    const now = Date.now();
+    const entries = Object.entries(stored).flatMap(([id, entry]) => {
+      if (entry && typeof entry === 'object'
+        && !Array.isArray(entry)
+        && Object.hasOwn(entry, 'value')
+        && Number.isFinite(entry.updatedAt)) {
+        return now - entry.updatedAt < METADATA_TTL_MS ? [[id, entry]] : [];
+      }
+      return [[id, { value: entry ?? null, updatedAt: now }]];
+    });
+    entries.sort((a, b) => b[1].updatedAt - a[1].updatedAt);
+    return Object.fromEntries(entries.slice(0, MAX_METADATA_ENTRIES));
+  } catch {
+    return {};
+  }
+}
+
+function isQuotaError(error) {
+  return error?.name === 'QuotaExceededError'
+    || error?.name === 'NS_ERROR_DOM_QUOTA_REACHED'
+    || error?.code === 22
+    || error?.code === 1014;
+}
+
 export function LibraryProvider({ children }) {
   const [movies, setMovies] = useState([]);
   const [series, setSeries] = useState([]);
@@ -31,17 +63,20 @@ export function LibraryProvider({ children }) {
   const [error, setError] = useState('');
   const [scannedAt, setScannedAt] = useState(null);
   const [progress, setProgress] = useState(readProgress);
+  const [metadataCache] = useState(readMetadataCache);
+  const metadataCacheRef = useRef(metadataCache);
   const [myList, setMyList] = useState(() => {
     const stored = readStorage(LIST_KEY, []);
     return Array.isArray(stored) ? stored.filter((id) => typeof id === 'string') : [];
   });
-  const [metadata, setMetadata] = useState(() => {
-    const stored = readStorage(METADATA_KEY, {});
-    return stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {};
-  });
+  const [metadata, setMetadata] = useState(() => Object.fromEntries(
+    Object.entries(metadataCache).map(([id, entry]) => [id, entry.value]),
+  ));
   const lastProgressWrite = useRef(new Map());
   const lastServerProgressWrite = useRef(new Map());
   const metadataRequests = useRef(new Map());
+  const metadataFailures = useRef(new Map());
+  const metadataPersistenceDisabled = useRef(false);
 
   const load = useCallback(async (refresh = false) => {
     setLoading(true);
@@ -56,13 +91,25 @@ export function LibraryProvider({ children }) {
       setFolders(result.folders ?? []);
       const persistedProgress = Object.fromEntries(Object.entries(result.watchProgress ?? {}).map(([id, item]) => [
         id,
-        item.completed ? null : {
-          currentTime: item.positionSeconds,
-          duration: item.durationSeconds,
-          updatedAt: new Date(item.updatedAt).getTime(),
-        },
+        item.completed
+          ? null
+          : {
+            currentTime: item.positionSeconds,
+            duration: item.durationSeconds,
+            updatedAt: new Date(item.updatedAt).getTime(),
+          },
       ]));
-      setProgress((previous) => ({ ...previous, ...persistedProgress }));
+      setProgress((previous) => {
+        const merged = { ...previous };
+        for (const [id, serverEntry] of Object.entries(persistedProgress)) {
+          const localUpdatedAt = Number.isFinite(previous[id]?.updatedAt) ? previous[id].updatedAt : 0;
+          const serverUpdatedAt = new Date(result.watchProgress[id].updatedAt).getTime();
+          if (Number.isFinite(serverUpdatedAt) && serverUpdatedAt > localUpdatedAt) {
+            merged[id] = serverEntry;
+          }
+        }
+        return merged;
+      });
     } catch (cause) {
       setError(cause.message || 'The movie library could not be loaded.');
     } finally {
@@ -71,14 +118,39 @@ export function LibraryProvider({ children }) {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  function handleStorageWriteError(key, cause) {
+    console.warn(`Browser storage write failed for ${key}: ${cause.message}`);
+    if (!isQuotaError(cause)) return;
+    metadataPersistenceDisabled.current = true;
+    metadataCacheRef.current = {};
+    setMetadata({});
+    try {
+      localStorage.removeItem(METADATA_KEY);
+    } catch (error) {
+      console.warn(`Browser metadata cache could not be cleared: ${error.message}`);
+    }
+  }
   useEffect(() => {
-    localStorage.setItem(WATCH_KEY, JSON.stringify(progress));
+    try {
+      localStorage.setItem(WATCH_KEY, JSON.stringify(progress));
+    } catch (cause) {
+      handleStorageWriteError(WATCH_KEY, cause);
+    }
   }, [progress]);
   useEffect(() => {
-    localStorage.setItem(LIST_KEY, JSON.stringify(myList));
+    try {
+      localStorage.setItem(LIST_KEY, JSON.stringify(myList));
+    } catch (cause) {
+      handleStorageWriteError(LIST_KEY, cause);
+    }
   }, [myList]);
   useEffect(() => {
-    localStorage.setItem(METADATA_KEY, JSON.stringify(metadata));
+    if (metadataPersistenceDisabled.current) return;
+    try {
+      localStorage.setItem(METADATA_KEY, JSON.stringify(metadataCacheRef.current));
+    } catch (cause) {
+      handleStorageWriteError(METADATA_KEY, cause);
+    }
   }, [metadata]);
 
   const toggleMyList = useCallback((movieId) => {
@@ -87,18 +159,48 @@ export function LibraryProvider({ children }) {
       : [...previous, movieId]);
   }, []);
 
-  const loadMetadata = useCallback(async (movieId) => {
-    if (Object.hasOwn(metadata, movieId)) return metadata[movieId];
+  const loadMetadata = useCallback((movieId) => {
+    const cached = metadataCacheRef.current[movieId];
+    if (cached && Date.now() - cached.updatedAt < METADATA_TTL_MS) return Promise.resolve(cached.value);
+    if (cached) {
+      delete metadataCacheRef.current[movieId];
+      setMetadata((previous) => {
+        const next = { ...previous };
+        delete next[movieId];
+        return next;
+      });
+    }
+    const failedAt = metadataFailures.current.get(movieId);
+    if (failedAt && Date.now() - failedAt < METADATA_FAILURE_RETRY_MS) return Promise.resolve(null);
     if (metadataRequests.current.has(movieId)) return metadataRequests.current.get(movieId);
     const request = movieApi.metadata(movieId)
       .then(({ metadata: result }) => {
-        setMetadata((previous) => ({ ...previous, [movieId]: result }));
-        return result;
+        const entry = { value: result ?? null, updatedAt: Date.now() };
+        metadataFailures.current.delete(movieId);
+        metadataCacheRef.current = {
+          ...metadataCacheRef.current,
+          [movieId]: entry,
+        };
+        const oldestFirst = Object.entries(metadataCacheRef.current)
+          .sort((a, b) => a[1].updatedAt - b[1].updatedAt);
+        while (oldestFirst.length > MAX_METADATA_ENTRIES) {
+          const [oldestId] = oldestFirst.shift();
+          delete metadataCacheRef.current[oldestId];
+        }
+        setMetadata(Object.fromEntries(
+          Object.entries(metadataCacheRef.current).map(([id, cacheEntry]) => [id, cacheEntry.value]),
+        ));
+        return entry.value;
+      })
+      .catch((cause) => {
+        metadataFailures.current.set(movieId, Date.now());
+        console.warn(`Optional movie metadata is unavailable: ${cause.message}`);
+        return null;
       })
       .finally(() => metadataRequests.current.delete(movieId));
     metadataRequests.current.set(movieId, request);
     return request;
-  }, [metadata]);
+  }, []);
 
   const saveProgress = useCallback((movieId, currentTime, duration, force = false) => {
     if (!duration || currentTime < 10) return;

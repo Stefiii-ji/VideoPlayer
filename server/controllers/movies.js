@@ -1,13 +1,23 @@
-import { randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import { getMovieMetadata } from '../services/metadata.js';
 import { isWithinDirectory, publicMovie, scanLibrary } from '../services/library.js';
 import { decidePlayback, sanitizeCapabilities } from '../services/playback/decision.js';
 import { findExternalSubtitles } from '../services/playback/subtitles.js';
 
 const RANGE_PATTERN = /^bytes=(\d*)-(\d*)$/;
+const CLIENT_DISCONNECT_CODES = new Set(['ERR_STREAM_PREMATURE_CLOSE', 'ECONNRESET']);
+
+function handleTransferError(error, res, next) {
+  if (CLIENT_DISCONNECT_CODES.has(error.code)) return;
+  if (res.headersSent || res.destroyed) {
+    if (!res.destroyed) res.destroy(error);
+    return;
+  }
+  next(error);
+}
 
 export function parseByteRange(header, size) {
   if (!header) return null;
@@ -38,6 +48,7 @@ export function createMovieController({
   ffprobeService,
   transcodeSessions,
   subtitleService,
+  readStreamFactory = createReadStream,
 }) {
   let catalog = new Map();
   let scannedAt = null;
@@ -128,30 +139,24 @@ export function createMovieController({
         await ensureScanned();
         const movie = catalog.get(req.params.id);
         if (!movie) return res.status(404).json({ error: 'Movie not found.' });
-        const metadata = await getMovieMetadata(movie.title, tmdbApiKey);
-        res.json({ metadata });
+        let metadata = null;
+        let metadataError = null;
+        if (tmdbApiKey) {
+          try {
+            metadata = await getMovieMetadata(movie.title, tmdbApiKey, { year: movie.releaseYear });
+          } catch (error) {
+            console.warn(`Optional movie metadata is unavailable: ${error.message}`);
+            metadataError = 'Online movie metadata is temporarily unavailable.';
+          }
+        }
+        res.json({ metadata, metadataError });
       } catch (error) {
         next(error);
       }
     },
     async stream(req, res, next) {
       try {
-        await ensureScanned();
-        if (!/^[a-f0-9]{24}$/.test(req.params.id)) {
-          return res.status(400).json({ error: 'Invalid movie ID.' });
-        }
-        const movie = catalog.get(req.params.id);
-        if (!movie) return res.status(404).json({ error: 'Movie not found.' });
-
-        const root = path.resolve(movieDirectory);
-        const resolvedRoot = await realpath(root);
-        const resolvedFile = await realpath(movie.absolutePath);
-        if (!isWithinDirectory(resolvedRoot, resolvedFile)) {
-          return res.status(403).json({ error: 'Movie path is outside the configured library.' });
-        }
-
-        const fileInfo = await stat(resolvedFile);
-        if (!fileInfo.isFile()) return res.status(404).json({ error: 'Movie file is unavailable.' });
+        const { movie, resolvedFile, fileInfo } = await resolveMovieFile(req.params.id);
         const range = parseByteRange(req.headers.range, fileInfo.size);
         res.setHeader('Accept-Ranges', 'bytes');
         res.setHeader('Content-Type', movie.mimeType);
@@ -166,58 +171,17 @@ export function createMovieController({
           res.status(206);
           res.setHeader('Content-Range', `bytes ${start}-${end}/${fileInfo.size}`);
           res.setHeader('Content-Length', String(end - start + 1));
-          const stream = createReadStream(resolvedFile, { start, end });
-          stream.on('error', next);
-          return stream.pipe(res);
+          await pipeline(readStreamFactory(resolvedFile, { start, end }), res);
+          return;
         }
 
         res.setHeader('Content-Length', String(fileInfo.size));
-        const stream = createReadStream(resolvedFile);
-        stream.on('error', next);
-        return stream.pipe(res);
+        await pipeline(readStreamFactory(resolvedFile), res);
       } catch (error) {
-        if (error.code === 'ENOENT') return res.status(404).json({ error: 'Movie file is unavailable.' });
-        next(error);
-      }
-    },
-    async transcode(req, res, next) {
-      let closeListener;
-      let clientDisconnected = false;
-      try {
-        const { movie, resolvedFile } = await resolveMovieFile(req.params.id);
-        const startSeconds = req.query.start === undefined ? 0 : Number(req.query.start);
-        if (!Number.isFinite(startSeconds) || startSeconds < 0 || startSeconds > 86_400) {
-          return res.status(400).json({ error: 'The playback start time is invalid.', code: 'INVALID_START_TIME' });
+        if (error.code === 'ENOENT' && !res.headersSent && !res.destroyed) {
+          return res.status(404).json({ error: 'Movie file is unavailable.' });
         }
-        closeListener = () => {
-          if (!res.writableEnded) clientDisconnected = true;
-        };
-        res.once('close', closeListener);
-        const session = await transcodeSessions.create({
-          movieId: movie.id,
-          inputPath: resolvedFile,
-          strategy: 'full-transcode',
-          startSeconds,
-          requestKey: randomUUID(),
-        });
-        res.removeListener('close', closeListener);
-        closeListener = null;
-        if (clientDisconnected || res.destroyed) {
-          try {
-            await transcodeSessions.stopSession(session.id);
-          } catch (error) {
-            console.error(`Disconnected playback cleanup failed (${error.code ?? 'UNKNOWN'}).`);
-          }
-          return;
-        }
-        return res.redirect(307, `/api/movies/${movie.id}/playback-sessions/${session.id}/index.m3u8`);
-      } catch (error) {
-        if (res.destroyed) return;
-        if (error.status) return playbackError(res, error);
-        if (error.code === 'ENOENT') return res.status(404).json({ error: 'Movie file is unavailable.' });
-        next(error);
-      } finally {
-        if (closeListener) res.removeListener('close', closeListener);
+        return handleTransferError(error, res, next);
       }
     },
     async playback(req, res, next) {
@@ -440,12 +404,13 @@ export function createMovieController({
         res.setHeader('Cache-Control', 'private, no-store');
         res.setHeader('Content-Type', asset.contentType);
         if (typeof asset.body === 'string') return res.status(200).send(asset.body);
-        asset.body.on('error', next);
-        return asset.body.pipe(res);
+        await pipeline(asset.body, res);
       } catch (error) {
         if (error.status) return playbackError(res, error);
-        if (error.code === 'ENOENT') return res.status(404).json({ error: 'Playback asset is not available yet.' });
-        next(error);
+        if (error.code === 'ENOENT' && !res.headersSent && !res.destroyed) {
+          return res.status(404).json({ error: 'Playback asset is not available yet.' });
+        }
+        return handleTransferError(error, res, next);
       }
     },
     async playbackSessionStatus(req, res, next) {
@@ -476,6 +441,10 @@ export function createMovieController({
   controller.getScan = async () => {
     await ensureScanned();
     return scanResult;
+  };
+  controller.hasMovie = async (id) => {
+    await ensureScanned();
+    return catalog.has(id);
   };
   controller.getScannedAt = () => scannedAt;
   return controller;

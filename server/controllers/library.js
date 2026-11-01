@@ -35,9 +35,22 @@ function cleanCollectionInput(body, catalog, previous = {}) {
 }
 
 export function createLibraryController({ movieController, stateStore, tmdbApiKey = '' }) {
+  let cachedCatalog = null;
+
   async function getCatalog() {
-    const [scan, state] = await Promise.all([movieController.getScan(), stateStore.read()]);
-    return { scan, state, catalog: buildCatalog(scan, state) };
+    const scan = await movieController.getScan();
+    const stateVersion = stateStore.getVersion();
+    if (cachedCatalog?.scan === scan && cachedCatalog.stateVersion === stateVersion) {
+      return cachedCatalog;
+    }
+    const state = await stateStore.read();
+    cachedCatalog = {
+      scan,
+      state,
+      catalog: buildCatalog(scan, state),
+      stateVersion,
+    };
+    return cachedCatalog;
   }
 
   return {
@@ -252,8 +265,9 @@ export function createLibraryController({ movieController, stateStore, tmdbApiKe
     },
     async progress(req, res, next) {
       try {
-        const { catalog } = await getCatalog();
-        if (!catalog.movieById.has(req.params.id)) return res.status(404).json({ error: 'Movie or episode not found.' });
+        if (!await movieController.hasMovie(req.params.id)) {
+          return res.status(404).json({ error: 'Movie or episode not found.' });
+        }
         const { positionSeconds, durationSeconds } = req.body ?? {};
         if (!Number.isFinite(positionSeconds) || positionSeconds < 0
           || !Number.isFinite(durationSeconds) || durationSeconds <= 0

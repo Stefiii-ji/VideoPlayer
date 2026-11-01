@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, unlink, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -272,6 +272,50 @@ test('removes stale session directories safely during initialization', async () 
   try {
     await manager.create(createOptions('2'.repeat(24)));
     await assert.rejects(readFile(path.join(staleDirectory, 'old.tmp')));
+  } finally {
+    await manager.dispose();
+  }
+});
+
+test('continues session creation when a stale directory cannot be removed', async () => {
+  await mkdir(tempDirectory);
+  const staleDirectory = path.join(tempDirectory, 'session-locked');
+  await mkdir(staleDirectory);
+  await writeFile(path.join(staleDirectory, 'old.tmp'), 'stale');
+  const oldTime = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+  await utimes(staleDirectory, oldTime, oldTime);
+  const manager = createManager({
+    staleAgeMs: 60 * 60 * 1000,
+    removeDirectory: async (directory, options) => {
+      if (directory === staleDirectory) {
+        throw Object.assign(new Error('directory is locked'), { code: 'EBUSY' });
+      }
+      return rm(directory, options);
+    },
+  });
+  const originalError = console.error;
+  const cleanupErrors = [];
+  console.error = (message) => cleanupErrors.push(message);
+  try {
+    const session = await manager.create(createOptions('3'.repeat(24)));
+    assert.equal(session.state, 'running');
+    assert.deepEqual(await readdir(staleDirectory), ['old.tmp']);
+    assert.equal(cleanupErrors.length, 1);
+    assert.match(cleanupErrors[0], /EBUSY/);
+  } finally {
+    console.error = originalError;
+    await manager.dispose();
+  }
+});
+
+test('retries initialization after a temporary-directory setup failure', async () => {
+  await writeFile(tempDirectory, 'blocking file');
+  const manager = createManager();
+  try {
+    await assert.rejects(manager.create(createOptions('4'.repeat(24))));
+    await unlink(tempDirectory);
+    const session = await manager.create(createOptions('4'.repeat(24)));
+    assert.equal(session.state, 'running');
   } finally {
     await manager.dispose();
   }

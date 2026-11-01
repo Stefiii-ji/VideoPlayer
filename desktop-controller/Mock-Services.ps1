@@ -1,9 +1,16 @@
+param(
+    [Parameter(Mandatory = $true)]
+    [int]$BackendPort,
+    [Parameter(Mandatory = $true)]
+    [int]$ClientPort
+)
+
 $ErrorActionPreference = 'Stop'
 $listeners = New-Object System.Collections.Generic.List[System.Net.HttpListener]
 $pending = New-Object System.Collections.Generic.List[object]
 
 try {
-    foreach ($port in @(5000, 5174)) {
+    foreach ($port in @($BackendPort, $ClientPort)) {
         $listener = New-Object System.Net.HttpListener
         $listener.Prefixes.Add("http://127.0.0.1:$port/")
         $listener.Start()

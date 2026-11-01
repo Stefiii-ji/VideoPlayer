@@ -8,10 +8,13 @@ function playbackUrl(url) {
 }
 
 async function request(path, options) {
-  const response = await fetch(`${API_BASE}${path}`, options);
+  const response = await fetch(`${API_BASE}${path}`, { ...options, credentials: 'include' });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     const details = body && typeof body === 'object' ? body : {};
+    if (response.status === 401 && details.code === 'AUTH_REQUIRED' && typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('moviestream:unauthorized'));
+    }
     throw Object.assign(new Error(details.error || `Request failed (${response.status}).`), {
       code: details.code,
       status: response.status,
@@ -21,6 +24,15 @@ async function request(path, options) {
   if (response.status === 204) return null;
   return response.json();
 }
+
+export const authApi = {
+  status: () => request('/auth/status'),
+  login: (token) => request('/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  }),
+};
 
 export const movieApi = {
   list: () => request('/movies'),
@@ -46,10 +58,7 @@ export const movieApi = {
     }),
   touchPlayback: (id, sessionId) =>
     request(`/movies/${encodeURIComponent(id)}/playback-sessions/${encodeURIComponent(sessionId)}`),
-  streamUrl: (id, { transcode = false, start = 0 } = {}) =>
-    transcode
-      ? `${API_BASE}/movies/${encodeURIComponent(id)}/transcode?start=${Math.floor(start)}`
-      : `${API_BASE}/movies/${encodeURIComponent(id)}/stream`,
+  streamUrl: (id) => `${API_BASE}/movies/${encodeURIComponent(id)}/stream`,
 };
 
 export const libraryApi = {
@@ -108,9 +117,13 @@ export const organizerApi = {
       method: 'POST',
       headers: { 'Content-Type': file.type || 'application/octet-stream' },
       body: file,
+      credentials: 'include',
     });
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
+      if (response.status === 401 && body.code === 'AUTH_REQUIRED' && typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('moviestream:unauthorized'));
+      }
       throw Object.assign(new Error(body.error || `Request failed (${response.status}).`), {
         code: body.code,
         status: response.status,

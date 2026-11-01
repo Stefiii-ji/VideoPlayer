@@ -43,6 +43,7 @@ export function createTranscodeSessionManager({
   processTimeoutMs = DEFAULT_PROCESS_TIMEOUT_MS,
   staleAgeMs = DEFAULT_STALE_AGE_MS,
   mediaToolDiagnostics,
+  removeDirectory = rm,
   now = Date.now,
 } = {}) {
   const sessions = new Map();
@@ -63,7 +64,7 @@ export function createTranscodeSessionManager({
 
   async function initialize() {
     if (!initialization) {
-      initialization = (async () => {
+      const attempt = (async () => {
         canonicalMediaDirectory = await realpath(validateMediaDirectory(mediaDirectory));
         const configuredTempRoot = validateMediaDirectory(tempDirectory);
         await mkdir(configuredTempRoot, { recursive: true });
@@ -75,20 +76,34 @@ export function createTranscodeSessionManager({
         }
         await cleanStaleSessions();
       })();
+      initialization = attempt.catch((error) => {
+        initialization = undefined;
+        throw error;
+      });
     }
     return initialization;
   }
 
   async function cleanStaleSessions() {
-    const entries = await readdir(canonicalTempDirectory, { withFileTypes: true });
+    let entries;
+    try {
+      entries = await readdir(canonicalTempDirectory, { withFileTypes: true });
+    } catch (error) {
+      reportCleanupFailure(error);
+      return;
+    }
     for (const entry of entries) {
       if (!entry.name.startsWith('session-') || entry.isSymbolicLink() || !entry.isDirectory()) continue;
-      const directory = path.join(canonicalTempDirectory, entry.name);
-      const info = await lstat(directory);
-      if (now() - info.mtimeMs < staleAgeMs) continue;
-      const resolved = await realpath(directory);
-      if (isWithinDirectory(canonicalTempDirectory, resolved)) {
-        await rm(resolved, { recursive: true, force: false });
+      try {
+        const directory = path.join(canonicalTempDirectory, entry.name);
+        const info = await lstat(directory);
+        if (now() - info.mtimeMs < staleAgeMs) continue;
+        const resolved = await realpath(directory);
+        if (isWithinDirectory(canonicalTempDirectory, resolved)) {
+          await removeDirectory(resolved, { recursive: true, force: false });
+        }
+      } catch (error) {
+        reportCleanupFailure(error);
       }
     }
   }

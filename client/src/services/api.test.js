@@ -15,6 +15,7 @@ describe('movieApi playback cleanup', () => {
     expect(fetch).toHaveBeenCalledWith('/api/movies/movie-id/playback-sessions/session-id', {
       method: 'DELETE',
       keepalive: true,
+      credentials: 'include',
     });
   });
 });

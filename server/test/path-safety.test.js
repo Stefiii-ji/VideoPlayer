@@ -33,6 +33,68 @@ test('validates media-root configuration without requiring it to exist', () => {
   assert.throws(() => createApp({ movieDirectory: path.parse(mediaRoot).root }), /filesystem root/i);
 });
 
+test('uses the default concurrent transcode limit when the environment value is blank', async () => {
+  const previous = process.env.MOVIESTREAM_MAX_TRANSCODES;
+  process.env.MOVIESTREAM_MAX_TRANSCODES = '  ';
+  let app;
+  try {
+    app = createApp({ movieDirectory: mediaRoot });
+  } finally {
+    if (previous === undefined) delete process.env.MOVIESTREAM_MAX_TRANSCODES;
+    else process.env.MOVIESTREAM_MAX_TRANSCODES = previous;
+  }
+  await app.locals.shutdown();
+});
+
+test('validates configured concurrent transcode limits', async () => {
+  const previous = process.env.MOVIESTREAM_MAX_TRANSCODES;
+  try {
+    process.env.MOVIESTREAM_MAX_TRANSCODES = '0';
+    assert.throws(
+      () => createApp({ movieDirectory: mediaRoot }),
+      /MOVIESTREAM_MAX_TRANSCODES must be an integer between 1 and 16/,
+    );
+
+    process.env.MOVIESTREAM_MAX_TRANSCODES = '17';
+    assert.throws(
+      () => createApp({ movieDirectory: mediaRoot }),
+      /MOVIESTREAM_MAX_TRANSCODES must be an integer between 1 and 16/,
+    );
+
+    process.env.MOVIESTREAM_MAX_TRANSCODES = '4';
+    const app = createApp({ movieDirectory: mediaRoot });
+    await app.locals.shutdown();
+  } finally {
+    if (previous === undefined) delete process.env.MOVIESTREAM_MAX_TRANSCODES;
+    else process.env.MOVIESTREAM_MAX_TRANSCODES = previous;
+  }
+});
+
+test('requires MOVIE_DIRECTORY to be set in server/.env', () => {
+  const previous = process.env.MOVIE_DIRECTORY;
+  delete process.env.MOVIE_DIRECTORY;
+  try {
+    assert.throws(() => createApp(), /Set MOVIE_DIRECTORY in server\/\.env/);
+    assert.throws(() => createApp({ movieDirectory: '  ' }), /Set MOVIE_DIRECTORY in server\/\.env/);
+  } finally {
+    if (previous !== undefined) process.env.MOVIE_DIRECTORY = previous;
+  }
+});
+
+test('requires MOVIE_DIRECTORY to exist and be a directory', async () => {
+  const missingDirectory = path.join(fixtureRoot, 'missing');
+  assert.throws(
+    () => createApp({ movieDirectory: missingDirectory }),
+    /MOVIE_DIRECTORY does not exist/,
+  );
+  const filePath = path.join(fixtureRoot, 'not-a-directory');
+  await writeFile(filePath, 'fixture');
+  assert.throws(
+    () => createApp({ movieDirectory: filePath }),
+    /MOVIE_DIRECTORY must be an existing directory/,
+  );
+});
+
 test('rejects absolute paths and traversal in either separator style', async () => {
   await assert.rejects(resolvePathWithinRoot(mediaRoot, '..\\outside'), {
     code: 'INVALID_LIBRARY_PATH',
